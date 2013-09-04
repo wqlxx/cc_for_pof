@@ -1,3 +1,6 @@
+#ifndef _CC_ERROR_H_
+#define _CC_ERROR_H_
+
 enum cc_error_pof_e{
     CC_ERROR = -1,
     CC_NO_ERROR,
@@ -18,5 +21,4 @@ enum cc_error_pof_e{
 };
 typedef enum cc_error_pof_e cc_error_pof_t;
 
-
-    
+#endif //__CC_ERROR_H__

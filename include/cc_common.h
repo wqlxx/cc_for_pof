@@ -1,3 +1,6 @@
+#ifndef _CC_COMMON_H_
+#define _CC_COMMON_H_
+
 enum cc_cmd_status_e {
     CC_CMD_NULL = -1,
     CC_CMD_OK = 0
@@ -20,4 +23,4 @@ enum cc_state_e {
     CC_STATE_MAX                = 8        
 };
 typedef enum cc_state_e cc_state_t;
-
+#endif
