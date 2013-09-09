@@ -24,7 +24,7 @@ extern FILE *log_fp;
         if(log_fp){                                 \
             fprintf(log_fp, fmt, ##__VA_ARGS__);    \
         }                                           \
-    }while(0);
+    }while(0)
 
 
 #define CC_ERROR_PRINT_HEAD                                                            \

@@ -6,22 +6,24 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <arpa/inet.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <fcntl.h>
+#include <sys/types.h>
 #include <sys/epoll.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
 
 #include "cc_common.h"
 #include "cc_init.h"
 #include "cc_error.h"
+
 
 int cc_cmd_set_controller_ip = CC_CMD_NULL;
 int cc_cmd_set_controller_port = CC_CMD_NULL;
@@ -59,7 +61,7 @@ const cc_command_line_t cmds[COMMAND_NUM] = {
 	{"-v, --version", "Print the version number of c_controller_for_pof."},
 };
 
-
+int listener;
 
 static void 
 cc_disp_help(void)
@@ -172,13 +174,63 @@ cc_set_init_config(int argc, char **argv)
 /*
 setnonblocking
 */
-int setnonblocking(int sockfd)
+int 
+cc_set_nonblocking(int sockfd)
 {
     if (fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFD, 0)|O_NONBLOCK) == -1) {
         return -1;
     }
     return 0;
 }
+/*
+int 
+set_reuseaddr(int sockfd)
+{
+
+	int flag = 1;
+    int ret;
+    ret = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&flag, sizeof(flag));
+  	if ( ret < 0 ) {
+    	//error( "Failed to set socket options ( fd = %d, ret = %d, errno = %s [%d] ).",fd, ret, strerror( errno ), errno );
+    	return CC_ERROR;
+ 	}
+	return CC_NO_ERROR;
+
+}
+*/
+
+int
+cc_set_nodelay(int sockfd)
+{
+
+    int flag = 1;
+  	int ret = setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof( flag ) );
+  	if ( ret < 0 ) {
+    	//error( "Failed to set socket options ( fd = %d, ret = %d, errno = %s [%d] ).",fd, ret, strerror( errno ), errno );
+    	return CC_ERROR;
+ 	}
+	return CC_NO_ERROR;
+
+}
+
+int 
+cc_set_recvbuf(int fd, size_t size)
+{
+    int ret;
+    ret = setsockopt(fd,SOL_SOCKET,SO_RCVBUF,&size,sizeof(size));
+    return ret;
+}
+
+
+int 
+cc_set_socket_fd(void)
+{
+	int fd;
+	int connect_status;
+	fd = socket(AF_INET,SOCK_STREAM,0);
+	return fd;
+}
+
 
 /*
 handle_message used as a test.
@@ -208,10 +260,230 @@ handle_message(int new_fd)
     return len;
 }
 
+
+int
+cc_process(int fd)
+{
+    
+}
+
+
+int 
+cc_server_conn_create(server_info_t *si)
+{
+	
+	if((si->fd = cc_set_socket_fd()) < 0)
+	{
+		printf("|ERR|socket create failed\n");
+		return 	CC_ERROR;
+	}
+
+	memset(si->addr,0,sizeof(struct sockaddr_in));
+	si->addr.sin_family = AF_INET;
+	si->addr.sin_addr.s_addr = inet_addr("127.0.0.1");//get_local_ip_main();
+	si->addr.sin_port = CC_CONTROLLER_PORT;
+	
+	int flag = 1;
+	int ret;
+	
+	ret = setsockopt(si->fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof( flag ))
+	if ( ret < 0 ) 
+	{
+    	CC_ERROR_PRINT_HEAD;
+        CC_PRINT("socket reused failed\n");
+    	return CC_ERROR;
+  	}
+
+	//ret = setsockopt(cc_socket->fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof( flag ));
+	ret = cc_set_nodelay(si->fd);
+	if ( ret < 0 ) 
+	{
+	    CC_ERROR_PRINT_HEAD;
+    	CC_PRINT("socket set_nodelay failed\n");
+    	return CC_ERROR;
+  	}
+
+	ret = cc_set_nonblocking(si->fd);
+	if ( ret < 0 ) 
+	{
+	    CC_ERROR_PRINT_HEAD;
+    	CC_PRINT("socket set_nonblocking failed\n");
+    	return CC_ERROR;
+  	}
+
+	ret = bind(si->fd,(struct sockaddr*)&si->addr,sizeof(struct sockaddr_in));
+	if(ret < 0)
+	{
+	    CC_ERROR_PRINT_HEAD;
+    	CC_PRINT("socket bind failed");
+		close(si->fd);
+    	return CC_ERROR;
+  	}
+
+	if(listen(si->fd, CC_LENGTH_OF_LISTEN_QUEUE))
+	{
+	    CC_ERROR_PRINT_HEAD;
+    	CC_PRINT("socket listen failed");
+		close(si->fd);
+    	return CC_ERROR;
+  	}
+
+	return si->fd;
+}
+
+
+int 
+cc_conn_accept(server_info_t *si)
+{
+	struct sockaddr_in switch_addr;
+	socklen_t addr_len;
+	pid_t pid;
+	int accept_fd;
+	int ret;
+	socklen_t *len;
+	list_element_t *new_elem;
+	sw_info_t *new_info;
+    
+	addr_len = sizeof(struct sockaddr_in);
+	accept_fd = accept(main_server.fd,(struct sockaddr*)&switch_addr,&addr_len);
+	if(accept_fd < 0)
+	{
+	    CC_ERROR_PRINT_HEAD;
+    	CC_PRINT("accept failed");
+		close(accept_fd);
+		return CC_ERROR;
+	}else if( accept_fd > FD_SETSIZE ) {
+		close(accept_fd);
+	} else {
+		cc_set_nonblocking(accept_fd);
+		cc_set_recvbuf(accept_fd, CC_MAX_SOCKET_BUFF);
+		cc_set_nodelay(accept_fd);
+
+		pid = fork();
+		if(pid < 0)
+		{
+			//TODO: close the listen socket
+			//printf("|ERR|fork failed\n");
+	        CC_ERROR_PRINT_HEAD;
+    	    CC_PRINT("create child process failed!");
+			close(accept_fd);
+			return CC_ERROR;
+		}
+
+		if(pid == 0)
+		{
+			//debug_wait("/home/ovs/debug");
+			
+			sw_info_t *sw_info = (sw_info_t*)malloc(sizeof(sw_info_t));;
+			cc_init_sw_info(sw_info);
+
+			sw_info->pid = getpid();
+			/*here we can add a function to build
+		 	*a file to restore the cc_sw_info with 
+			 *a special name, such as "sw_$pid.txt".
+		 	*then main loop can throught search these files
+		 	*to make a list which can be used to build a virtual network manager
+	     		*/
+			sw_info->fd = accept_fd;
+
+			if( accept_fd < CC_ACCEPT_FD)
+			{
+				dup2(accept_fd, CC_ACCEPT_FD);//avoid the fd is smaller than 3,0 is for standard input, is for standard output 2 is for standard error
+				close(accept_fd);
+				accept_fd = CC_ACCEPT_FD;
+			}
+
+			struct timeval timeout;
+			fd_set writefds;
+			fd_set readfds;
+			pool_init(sw_info->cc_thread_pool, CC_MAX_THREAD_NUM);
+			while(1)
+			{
+				FD_ZERO(&readfds);
+				FD_ZERO(&writefds);
+				FD_SET(accept_fd,&readfds);
+				FD_SET(accept_fd,&writefds);
+				timeout.tv_sec = CC_CONN_TIMEOUT_SEC;
+				timeout.tv_usec = CC_CONN_TIMEOUT_USEC;
+				ret = select(accept_fd+1, &readfds, &writefds, NULL, &timeout);
+				if( ret == -1 )
+				{
+					if( errno == EINTR )				
+						continue;
+					else
+						return CC_ERROR;
+				}else if( ret == 0 ){
+					continue;
+				}else{
+					if(FD_ISSET(accept_fd,&readfds))
+						//cc_of_handler_recv_event(cc_sw_info);
+						//cc_recv_from_secure_channel(cc_sw_info);
+					if(FD_ISSET(accept_fd,&writefds))
+						//cc_of_handler_send_event(cc_sw_info);
+						//cc_flush_to_secure_channel(cc_sw_info);
+				}
+			}
+			cc_finalize_sw_info(sw_info);
+			return CC_NO_ERROR;
+			/*may be we should throw a signal to parent to delete the
+			*the record of this switch 
+			*/
+		}else{
+			return CC_NO_ERROR;
+		}
+	}
+}
+
+int
+cc_polling(cc_socket* cc_socket)
+{
+	int ret;
+	fd_set listen_fdset;
+	int max_fd = cc_socket->fd + 1;
+
+	FD_ZERO(&listen_fdset);
+	FD_SET(cc_socket->fd, &listen_fdset);
+	while(1)
+	{
+		
+		FD_ZERO(&listen_fdset);
+		FD_SET(cc_socket->fd,&listen_fdset);
+		ret = select(max_fd,&listen_fdset,NULL,NULL,0);
+		if( ret == -1 )
+		{
+			if( errno == EINTR )				
+				continue;
+			else
+				return CC_ERROR;
+		}else if( ret == 0 ){
+			continue;
+		}else{
+			if(FD_ISSET(cc_socket->fd, &listen_fdset))
+			{
+				sw_info *cc_sw_info;
+				ret = cc_conn_accept(cc_socket , cc_sw_info);
+				if( ret < 0 ){
+					log_err_for_cc("accept failed!");
+					return CC_ERROR;
+				}
+				//ret = cc_insert_sw_info(sw_info_table, cc_sw_info);
+				if( ret < 0 ){
+					return CC_ERROR;
+				}
+			}
+		}
+	}
+	return CC_SUCCESS;
+}
+
+
+/*use double fork to create the child process*/
+#if 0
 int
 cc_finish_init(void)
 {
-    int listener, new_fd, kdpfd, nfds, n, ret, curfds;
+    int new_fd, kdpfd, nfds, n, ret, curfds;
+    pid_t pid, pid_s; /*20130905 add*/
     socklen_t len;
     struct sockaddr_in my_addr, their_addr;
     unsigned int myport, lisnum;
@@ -242,23 +514,26 @@ cc_finish_init(void)
     else
         CC_OUTPUT_LOG_FILE("set rlimit success\n");
 
-    if ((listener = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+    if ((listener = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         CC_ERROR_PRINT_HEAD;
         CC_PRINT("socket");
         return CC_ERROR;
     } else
         CC_PRINT("socket create success\n");
 
-    setnonblocking(listener);
-
+    set_nonblocking(listener);
+    set_nodelay(listener);
+    set_reuseaddr(listener);
+    
     bzero(&my_addr, sizeof(my_addr));
-    my_addr.sin_family = PF_INET;
+    my_addr.sin_family = AF_INET;
     my_addr.sin_port = htons(myport);
-    my_addr.sin_addr.s_addr = cc_controller_port;
+    my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(listener, (struct sockaddr *) &my_addr, sizeof(struct sockaddr)) == CC_ERROR) {
         CC_ERROR_PRINT_HEAD;
         CC_PRINT("bind");
+        perror("bind");
         return CC_ERROR;
     } else
         CC_PRINT("socket bind success\n");
@@ -268,9 +543,11 @@ cc_finish_init(void)
         CC_PRINT("listen");
         return CC_ERROR;
 
-    } else
+    } else {
         CC_PRINT("listen success\n");
+    }
 
+    
     kdpfd = epoll_create(MAXEPOLLSIZE);
     len = sizeof(struct sockaddr_in);
     ev.events = EPOLLIN | EPOLLET;
@@ -282,46 +559,56 @@ cc_finish_init(void)
 
     } else
         CC_PRINT("socket add epoll success\n");
+
     curfds = 1;
     while (1) {
         nfds = epoll_wait(kdpfd, events, curfds, -1);
         if (nfds == -1) {
             CC_ERROR_PRINT_HEAD;
-            CC_PRINT("epoll_wait");
+            CC_PRINT("epoll_wait failed!");
             break;
         }
-        for (n = 0; n < nfds; ++n) {
-            if (events[n].data.fd == listener) {
+        CC_PRINT("nfds is %d\n", nfds);
+        //for (n = 0; n < nfds; ++n) {
+            if (events[0].data.fd == listener) {
                 new_fd = accept(listener, (struct sockaddr *) &their_addr,
                                 &len);
+                CC_PRINT("new fd is %d", new_fd);
                 if (new_fd < 0) {
                     CC_DEBUG_PRINT_F("accept");
                     continue;
-                } else
-                    CC_PRINT("there is a connect from %d:%d£¬alloced socket: %d\n",\
+                } else {
+                    CC_PRINT("there is a connect from %s:%d, alloced socket: %d\n",\
                         inet_ntoa(their_addr.sin_addr), ntohs(their_addr.sin_port), new_fd);
-
-                setnonblocking(new_fd);
-                ev.events = EPOLLIN | EPOLLET;
-                ev.data.fd = new_fd;
-                if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, new_fd, &ev) < 0) {
-                    CC_ERROR_PRINT_HEAD;
-                    CC_PRINT("add socket '%d' to epoll failed %s\n",
-                            new_fd, strerror(errno));
-                    return CC_ERROR;
                 }
-                curfds++;
-            } else {
-                ret = handle_message(events[n].data.fd);
-                if (ret < 1 && errno != 11) {
-                    epoll_ctl(kdpfd, EPOLL_CTL_DEL, events[n].data.fd,
-                              &ev);
-                    curfds--;
+
+                /*here use double fork to create child process*/
+                if(pid = fork() < 0){
+                    CC_ERROR_PRINT_HEAD;
+                    CC_PRINT("first fork error!");
+                    return CC_ERROR;
+                }else if(pid == 0){
+                    CC_PRINT("first child pid\n");
+                    if((pid_s = fork())<0){
+                        CC_ERROR_PRINT_HEAD;
+                        CC_PRINT("second fork error!");
+                        return CC_ERROR;                        
+                    }else if(pid_s > 0){
+                        CC_PRINT("first child exit pid is %d", getpid());
+                        close(new_fd);
+                        exit(0);
+                    }
+                    CC_PRINT("second child pid\n");
+
+                    handle_message(new_fd);
+                    CC_PRINT("pid is %d exit", getpid());
+                    exit(0);
                 }
             }
-        }
+        //}
     }
+    CC_PRINT("cc_finish exiting\n");
     close(listener);
     return 0;
 }
-
+#endif
